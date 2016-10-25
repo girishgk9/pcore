@@ -10,6 +10,9 @@ os.environ['LANG']='C'
 
 WORKDIR='./debuginfo_rpms'
 DEBUG_FILES='debugfiles.txt'
+INSTALL='install'
+REINSTALL='reinstall'
+DNF='/usr/bin/dnf'
 flag_debug = False
 
 
@@ -60,7 +63,7 @@ def get_unavail_repos():
     ping repositories trying `yum/dnf info bash` and returns an unavailable repo list
     """
     print('detecting unavailable repos...')
-    unavail_repos = []
+    unavail_repos = ['jws-3*', '*beta*', '*rhmap*']
     while True:
         command = 'yum --disablerepo=\'*\' --enablerepo=\'*debug*\' '
         command += ' '.join(['--disablerepo="{0}"'.format(r) for r in unavail_repos])
@@ -84,6 +87,10 @@ def get_unavail_repos():
 def is_fc24():
     revision = os.uname()[2]
     return revision.find('fc24') >= 0
+
+
+def has_dnf():
+    return os.access(DNF, os.X_OK)
 
 
 def make_directory():
@@ -123,34 +130,77 @@ def get_debugfile_list_eu_unstrip(path_to_core):
     return list
 
 
-def get_download_command():
+def get_yum_command(subcommand):
     """
-    yum version:
-    yum reinstall -y --enablerepo "*debug*" --downloadonly --downloaddir=./debuginfo_rpms /usr/lib/debug/.build-id/ff/246dbc378d5afc4885c6bc26d3190b76321a35
+    yum <subcommand> -y --enablerepo "*debug*" --downloadonly --downloaddir=. /usr/lib/debug/.build-id/ff/246dbc378d5afc4885c6bc26d3190b76321a35
+    """
+    unavail_repos = get_unavail_repos()
+    opt_unavail_repos = ' '.join(['--disablerepo="{0}"'.format(r) for r in unavail_repos])
+    command = 'yum ' + subcommand
+    command += ' -y --disablerepo="*" --enablerepo="*debug*" --downloadonly --downloaddir=.'
+    command += ' ' + opt_unavail_repos
+    command += ' ' + ' '.join(get_debugfile_list())
+    return command
 
-    dnf version:
+
+def get_yum_install_command():
+    """
+    yum install -y --enablerepo "*debug*" --downloadonly --downloaddir=. /usr/lib/debug/.build-id/ff/246dbc378d5afc4885c6bc26d3190b76321a35
+    """
+    return get_yum_command(INSTALL)
+
+
+def get_yum_reinstall_command():
+    """
+    yum reinstall -y --enablerepo "*debug*" --downloadonly --downloaddir=. /usr/lib/debug/.build-id/ff/246dbc378d5afc4885c6bc26d3190b76321a35
+    """
+    return get_yum_command(REINSTALL)
+
+#############
+#############
+############# TODO: 必要とする debuginfo より新しい debuginfo がシステムにインストールされているとき、yum reinstall でダウンロードされないのをなんとかする！
+#############
+#############
+
+
+def get_dnf_download_command():
+    """
     dnf download --disablerepo='*' --enablerepo='*debug*' --destdir=xxx /usr/lib/debug/.build-id/ff/246dbc378d5afc4885c6bc26d3190b76321a35
     """
     unavail_repos = get_unavail_repos()
     opt_unavail_repos = ' '.join(['--disablerepo="{0}"'.format(r) for r in unavail_repos])
-    if (is_fc24()):
-        command = 'dnf download --disablerepo="*" --enablerepo="*debug*"'
-    else:
-        command = 'yum reinstall -y --disablerepo="*" --enablerepo "*debug*" --downloadonly --downloaddir=.'
+    command = 'dnf download --disablerepo="*" --enablerepo="*debug*"'
     command += ' ' + opt_unavail_repos
     command += ' ' + ' '.join(get_debugfile_list())
-    #command += ' ' + ' '.join(get_debugfile_list(sys.argv[1]))
     return command
+
 
 def download_debuginfo():
     """
-    """
-    command = get_download_command()
-    os.chdir(WORKDIR)
-    print command
-    os.system(command)
-    os.chdir('..')
+    TODO:
+    has_dnf() を書いて dnf のあるなしで判定する
 
+    has_dnf() == false だったら yum install と yum reinstall を実行
+    yum reinstall -y --enablerepo "*debug*" --downloadonly --downloaddir=./debuginfo_rpms /usr/lib/debug/.build-id/ff/246dbc378d5afc4885c6bc26d3190b76321a35
+    yum install -y --enablerepo "*debug*" --downloadonly --downloaddir=./debuginfo_rpms /usr/lib/debug/.build-id/ff/246dbc378d5afc4885c6bc26d3190b76321a35
+    """
+    if (has_dnf()):
+        command = get_dnf_download_command()
+        print command
+        os.chdir(WORKDIR)
+        os.system(command)
+        os.chdir('..')
+    else:
+        command = get_yum_install_command()
+        print command
+        os.chdir(WORKDIR)
+        os.system(command)
+        os.chdir('..')
+        command = get_yum_reinstall_command()
+        print command
+        os.chdir(WORKDIR)
+        os.system(command)
+        os.chdir('..')
 
 def unpack_debuginfo():
     files = os.listdir(WORKDIR)
