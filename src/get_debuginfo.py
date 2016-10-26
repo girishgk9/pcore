@@ -175,6 +175,27 @@ def get_dnf_download_command():
     return command
 
 
+def download_debuginfo_by_dnf():
+    command = get_dnf_download_command()
+    print command
+    os.chdir(WORKDIR)
+    os.system(command)
+    os.chdir('..')
+
+
+def download_debuginfo_by_yum():
+    command = get_yum_install_command()
+    print command
+    os.chdir(WORKDIR)
+    os.system(command) # 出力をパースして残りのパッケージ名を抽出する
+    os.chdir('..')
+    command = get_yum_reinstall_command() # ここを yumdownloader にする
+    print command
+    os.chdir(WORKDIR)
+    os.system(command)
+    os.chdir('..')
+
+
 def download_debuginfo():
     """
     TODO:
@@ -185,12 +206,9 @@ def download_debuginfo():
     yum install -y --enablerepo "*debug*" --downloadonly --downloaddir=./debuginfo_rpms /usr/lib/debug/.build-id/ff/246dbc378d5afc4885c6bc26d3190b76321a35
     """
     if (has_dnf()):
-        command = get_dnf_download_command()
-        print command
-        os.chdir(WORKDIR)
-        os.system(command)
-        os.chdir('..')
+        download_debuginfo_by_dnf()
     else:
+        download_debuginfo_by_yum()
         command = get_yum_install_command()
         print command
         os.chdir(WORKDIR)
@@ -201,6 +219,7 @@ def download_debuginfo():
         os.chdir(WORKDIR)
         os.system(command)
         os.chdir('..')
+
 
 def unpack_debuginfo():
     files = os.listdir(WORKDIR)
