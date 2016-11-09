@@ -5,6 +5,7 @@ import commands
 import re
 import sys
 import os
+import subprocess
 
 os.environ['LANG']='C'
 
@@ -13,7 +14,9 @@ DEBUG_FILES='debugfiles.txt'
 INSTALL='install'
 REINSTALL='reinstall'
 DNF='/usr/bin/dnf'
-flag_debug = False
+YUM='/usr/bin/yum'
+YUMDOWNLOADER='/usr/bin/yumdownloader'
+flag_debug = True
 
 
 def my_name():
@@ -25,12 +28,12 @@ THIS = my_name()
 
 
 def usage():
-    sys.exit(THIS + ' [corefile]\n')
+    sys.exit('Just run ' + THIS)
 
 
 def debug(message):
     if flag_debug:
-        print(message)
+        print('debug: ' + message)
 
 
 def warn(message):
@@ -65,13 +68,15 @@ def get_unavail_repos():
     print('detecting unavailable repos...')
     unavail_repos = ['jws-3*', '*beta*', '*rhmap*']
     while True:
-        command = 'yum --disablerepo=\'*\' --enablerepo=\'*debug*\' '
-        command += ' '.join(['--disablerepo="{0}"'.format(r) for r in unavail_repos])
+        command = 'yum --disablerepo=* --enablerepo=*debug* '
+        command += ' '.join(['--disablerepo={0}'.format(r) for r in unavail_repos])
         command += ' info bash'
-        print(command)
+        debug(command)
         (status, output) = commands.getstatusoutput(command)
-        debug(output)
-        debug(status)
+        # hokuda uncomment
+        #(status, output) = (0, None)
+        debug('output=' + output)
+        debug('status=' + str(status))
         if status != 0:
             repo = parse_yum_error(output)
             if repo != None and repo != '':
@@ -91,6 +96,10 @@ def is_fc24():
 
 def has_dnf():
     return os.access(DNF, os.X_OK)
+
+
+def has_yumdownloader():
+    return os.access(YUMDOWNLOADER, os.X_OK)
 
 
 def make_directory():
@@ -130,37 +139,32 @@ def get_debugfile_list_eu_unstrip(path_to_core):
     return list
 
 
-def get_yum_command(subcommand):
+def get_yum_install_command(unavail_repos):
     """
     yum <subcommand> -y --enablerepo "*debug*" --downloadonly --downloaddir=. /usr/lib/debug/.build-id/ff/246dbc378d5afc4885c6bc26d3190b76321a35
     """
-    unavail_repos = get_unavail_repos()
-    opt_unavail_repos = ' '.join(['--disablerepo="{0}"'.format(r) for r in unavail_repos])
-    command = 'yum ' + subcommand
-    command += ' -y --disablerepo="*" --enablerepo="*debug*" --downloadonly --downloaddir=.'
+    # For unknown reason, the "install" sub command does not work, when an
+    # argument to the --enablerepo/disablerepo option only for quoted by
+    # ' and ", like "--disablerepo=\'*\'".
+    opt_unavail_repos = ' '.join(['--disablerepo={0}'.format(r) for r in unavail_repos])
+    command = 'yum install'
+    command += ' --assumeno --disablerepo=* --enablerepo=*debug* --downloadonly --downloaddir=.'
     command += ' ' + opt_unavail_repos
     command += ' ' + ' '.join(get_debugfile_list())
     return command
 
 
-def get_yum_install_command():
+def get_yumdownloader_command(unavail_repos, packages):
     """
-    yum install -y --enablerepo "*debug*" --downloadonly --downloaddir=. /usr/lib/debug/.build-id/ff/246dbc378d5afc4885c6bc26d3190b76321a35
+    yumdownloader --enablerepo "*debug*" pkg pkg ...
     """
-    return get_yum_command(INSTALL)
-
-
-def get_yum_reinstall_command():
-    """
-    yum reinstall -y --enablerepo "*debug*" --downloadonly --downloaddir=. /usr/lib/debug/.build-id/ff/246dbc378d5afc4885c6bc26d3190b76321a35
-    """
-    return get_yum_command(REINSTALL)
-
-#############
-#############
-############# TODO: 必要とする debuginfo より新しい debuginfo がシステムにインストールされているとき、yum reinstall でダウンロードされないのをなんとかする！
-#############
-#############
+    opt_unavail_repos = ' '.join(['--disablerepo={0}'.format(r) for r in unavail_repos])
+    command = 'yumdownloader'
+    command += ' --disablerepo=* --enablerepo=*debug*'
+    command += ' ' + opt_unavail_repos
+    command += ' ' + ' '.join(packages)
+    debug(command)
+    return command
 
 
 def get_dnf_download_command():
@@ -177,63 +181,82 @@ def get_dnf_download_command():
 
 def download_debuginfo_by_dnf():
     command = get_dnf_download_command()
-    print command
+    print('Running ' + command)
     os.chdir(WORKDIR)
     os.system(command)
     os.chdir('..')
 
+# ---> Package bash-debuginfo.x86_64 0:4.2.46-19.el7 will be installed
+PATTERN0 = re.compile(r'---> Package (.+)\.(.+) 0:(.+) will be installed')
+
+# Package matching e2fsprogs-debuginfo-1.42.9-7.el7.x86_64 already installed. Checking for update.
+PATTERN1 = re.compile(r'Package matching (.+) already installed. Checking for update.')
+
+# Package elfutils-debuginfo-0.163-3.el7.x86_64 already installed and latest version
+PATTERN2 = re.compile(r'Package (.+) already installed and latest version')
+
+def parse_line_to_find_installed_package(line):
+    match = PATTERN0.match(line)
+    if (match):
+        debug('parse_line_to_find_installed_package: parsed(0) ' + line)
+        return match.group(1) + '-' + match.group(3) + '.' + match.group(2)
+    match = PATTERN1.match(line)
+    if (match):
+        debug('parse_line_to_find_installed_package: parsed(1) ' + line)
+        return match.group(1)
+    match = PATTERN2.match(line)
+    if (match):
+        debug('parse_line_to_find_installed_package: parsed(2) ' + line)
+        return match.group(1)
+    return None
+
+
+def parse_yum_install_output(out):
+    packages = []
+    for line in out.split('\n'):
+        package = parse_line_to_find_installed_package(line)
+        if package:
+            packages.append(package)
+    return packages
+
 
 def download_debuginfo_by_yum():
-    command = get_yum_install_command()
-    print command
+    unavail_repos = get_unavail_repos()
+
+    # search for necessary debuginfo packages
+    command = get_yum_install_command(unavail_repos)
+    print('Running ' + command)
+    proc = subprocess.Popen(command.split(' '), stdout=subprocess.PIPE)
+    out, err = proc.communicate()
+    packages = parse_yum_install_output(out)
+    debug(str(packages))
+    
     os.chdir(WORKDIR)
-    os.system(command) # 出力をパースして残りのパッケージ名を抽出する
-    os.chdir('..')
-    command = get_yum_reinstall_command() # ここを yumdownloader にする
-    print command
-    os.chdir(WORKDIR)
+    command = get_yumdownloader_command(unavail_repos, packages)
     os.system(command)
     os.chdir('..')
 
 
 def download_debuginfo():
-    """
-    TODO:
-    has_dnf() を書いて dnf のあるなしで判定する
-
-    has_dnf() == false だったら yum install と yum reinstall を実行
-    yum reinstall -y --enablerepo "*debug*" --downloadonly --downloaddir=./debuginfo_rpms /usr/lib/debug/.build-id/ff/246dbc378d5afc4885c6bc26d3190b76321a35
-    yum install -y --enablerepo "*debug*" --downloadonly --downloaddir=./debuginfo_rpms /usr/lib/debug/.build-id/ff/246dbc378d5afc4885c6bc26d3190b76321a35
-    """
     if (has_dnf()):
         download_debuginfo_by_dnf()
     else:
         download_debuginfo_by_yum()
-        command = get_yum_install_command()
-        print command
-        os.chdir(WORKDIR)
-        os.system(command)
-        os.chdir('..')
-        command = get_yum_reinstall_command()
-        print command
-        os.chdir(WORKDIR)
-        os.system(command)
-        os.chdir('..')
 
 
 def unpack_debuginfo():
     files = os.listdir(WORKDIR)
     for file in files:
         file = WORKDIR + '/' + file
-        print file
+        print('Unpacking ' + file)
         command = 'rpm2cpio ' + file + ' | cpio -idu'
         os.system(command)
 
 
 if __name__ == '__main__':
+    if ((not has_dnf()) and (not has_yumdownloader())):
+        sys.exit(THIS + ' requires yumdownloader.\nRun yum install yum-utils\n')
     make_directory()
     download_debuginfo()
     unpack_debuginfo()
-    sys.exit('\n=========\nrun ./opencore.sh')
-#else:
-#    pass
+    sys.exit('\n\nDebuginfo provided.\nRun ./opencore.sh')
